@@ -1,0 +1,7 @@
+*.db
+*.db-wal
+*.db-shm
+/mailcat
+/sample/
+/dist/
+.DS_Store
