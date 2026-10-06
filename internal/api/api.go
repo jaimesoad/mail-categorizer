@@ -10,9 +10,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jaimesoad/mail-categorizer/internal/categories"
 	"github.com/jaimesoad/mail-categorizer/internal/email"
 	"github.com/jaimesoad/mail-categorizer/internal/engine"
 	"github.com/jaimesoad/mail-categorizer/internal/explain"
@@ -56,6 +58,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/questions/{id}/approve", s.approveQuestion)
 	mux.HandleFunc("POST /v1/questions/{id}/reject", s.rejectQuestion)
 	mux.HandleFunc("GET /v1/metrics", s.metrics)
+	mux.HandleFunc("GET /v1/sync/pending", s.syncPending)
+	mux.HandleFunc("POST /v1/sync/ack", s.syncAck)
 	return s.middleware(mux)
 }
 
@@ -230,7 +234,11 @@ func (s *Server) classify(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	out, err := s.eng.Process(r.Context(), em)
+	ctx := r.Context()
+	if r.URL.Query().Get("quiet") == "true" {
+		ctx = engine.WithQuiet(ctx) // bulk history import: no Telegram prompts, no label sync
+	}
+	out, err := s.eng.Process(ctx, em)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -362,7 +370,18 @@ func (s *Server) categories(w http.ResponseWriter, _ *http.Request) {
 		}
 		return out
 	}
-	writeJSON(w, 200, map[string]any{"categories": build(""), "unknown": "unknown"})
+	// flat list of the external labels each category maps to (used to create them in Gmail)
+	type lab struct {
+		ID    string `json:"id"`
+		Label string `json:"label"`
+	}
+	var labels []lab
+	t.Walk(func(c categories.Category, _ int) {
+		if c.ID != categories.UnknownID && t.Enabled(c.ID) {
+			labels = append(labels, lab{c.ID, s.labelName(c.ID)})
+		}
+	})
+	writeJSON(w, 200, map[string]any{"categories": build(""), "unknown": "unknown", "labels": labels})
 }
 
 func (s *Server) questions(w http.ResponseWriter, r *http.Request) {
@@ -457,4 +476,68 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// labelName builds the external label for a category: "<prefix>/<Parent>/<Child>".
+func (s *Server) labelName(category string) string {
+	if category == "" {
+		return ""
+	}
+	parts := []string{s.eng.Config().Sync.LabelPrefix}
+	for _, n := range s.eng.Tree().PathNames(category) {
+		parts = append(parts, strings.ReplaceAll(n, "/", "-"))
+	}
+	return strings.Join(parts, "/")
+}
+
+// syncPending lists emails whose label in the external mailbox must be set or
+// changed. An external orchestrator (n8n) applies them and then acks.
+func (s *Server) syncPending(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	items, err := s.eng.DB().SyncPending(r.Context(), limit)
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	type item struct {
+		EmailID       string `json:"email_id"`
+		Category      string `json:"category"`
+		Path          string `json:"path"`
+		Label         string `json:"label"`
+		PreviousLabel string `json:"previous_label,omitempty"`
+		Confident     bool   `json:"confident"` // false: a prediction the user has not confirmed
+	}
+	out := make([]item, 0, len(items))
+	for _, it := range items {
+		out = append(out, item{
+			EmailID: it.EmailID, Category: it.Category, Path: s.eng.Tree().Path(it.Category),
+			Label: s.labelName(it.Category), PreviousLabel: s.labelName(it.Previous),
+			Confident: it.Decision != storage.ResolvedPredicted,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"items": out})
+}
+
+func (s *Server) syncAck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		EmailID  string `json:"email_id"`
+		Category string `json:"category"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.EmailID == "" || req.Category == "" {
+		writeErr(w, 400, "email_id and category are required")
+		return
+	}
+	if err := s.eng.DB().AckSync(r.Context(), req.EmailID, req.Category); err != nil {
+		s.fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
 }

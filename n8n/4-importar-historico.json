@@ -1,0 +1,128 @@
+{
+  "name": "mailcat · 4 Importar histórico (preentrenamiento)",
+  "nodes": [
+    {
+      "id": "e802cbed-9bcf-4e14-bd29-df7aec503f03",
+      "name": "Ejecutar a mano",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "1f7c7823-d891-4fa4-a5a3-ea360ea014c4",
+      "name": "Leer correos antiguos",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 500,
+        "simple": false,
+        "filters": {
+          "q": "in:anywhere -in:spam -in:trash newer_than:2y"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "55bee69c-457b-4e6c-b418-d0459883c714",
+      "name": "Preparar para mailcat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Convierte un mensaje de Gmail (Gmail Trigger / nodo Gmail con \"Simplify\" desactivado) al JSON de mailcat.\nconst clean = (s) => (s === undefined || s === null ? '' : String(s));\nreturn $input.all().map(({ json: m }) => {\n  const from = m.from && m.from.value && m.from.value[0];\n  const sender = from\n    ? (from.name ? `${from.name} <${from.address}>` : from.address)\n    : clean(m.from && m.from.text ? m.from.text : m.from);\n  // Las etiquetas propias de Gmail (CATEGORY_PROMOTIONS...) son una señal útil para mailcat.\n  const labels = (m.labelIds || []).map(l => String(l).toLowerCase().replace(/_/g, ' ')).join(',');\n  const h = m.headers || {};\n  const headers = {};\n  for (const k of ['list-unsubscribe', 'list-id', 'precedence', 'auto-submitted']) {\n    if (h[k]) headers[k] = clean(h[k]);\n  }\n  if (labels) headers['x-gmail-labels'] = labels;\n  return { json: {\n    id: `gmail-${m.id}`,\n    sender,\n    subject: clean(m.subject),\n    body: clean(m.text || m.snippet).slice(0, 20000),\n    message_id: clean(h['message-id']).replace(/[<>]/g, ''),\n    in_reply_to: clean(h['in-reply-to']).replace(/[<>]/g, ''),\n    received_at: m.date ? new Date(m.date).toISOString() : undefined,\n    headers,\n  } };\n});"
+      }
+    },
+    {
+      "id": "bd0d5d2d-f55f-49f8-8df4-3f2698de668f",
+      "name": "Importar en silencio",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://mailcat:8080/v1/emails/classify?quiet=true",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "mailcat token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ejecutar a mano": {
+      "main": [
+        [
+          {
+            "node": "Leer correos antiguos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer correos antiguos": {
+      "main": [
+        [
+          {
+            "node": "Preparar para mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar para mailcat": {
+      "main": [
+        [
+          {
+            "node": "Importar en silencio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "note": "Importa hasta 500 correos antiguos SIN molestarte por Telegram ni etiquetarlos. Cambia el límite/filtro y repítelo. Luego: mailcat pretrain -from-db (LLM local) y mailcat audit."
+  }
+}

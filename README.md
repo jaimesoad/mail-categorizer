@@ -94,6 +94,13 @@ curl -s localhost:8080/v1/emails/classify -d '{"id":"email-123","sender":"billin
 Escucha en loopback por defecto. Con `MAILCAT_TOKEN` exige `Authorization: Bearer …`; `serve` se niega a
 escuchar fuera de loopback sin token.
 
+## Gmail, n8n, Telegram y LLM local
+
+`mailcat` puede (1) **preentrenarse** con tu buzón existente usando un LLM local (Ollama) como "maestro" de peso
+reducido y verificable (`pretrain`, `audit`, `export`), (2) **preguntarte por Telegram** con botones cuando duda,
+y (3) **etiquetar Gmail** a través de workflows de n8n listos para importar en [`n8n/`](n8n).
+Guía completa y paso a paso: [`docs/GMAIL-N8N.md`](docs/GMAIL-N8N.md). Docker: `Dockerfile` y `docker-compose.yml`.
+
 ## Privacidad (§24)
 
 Todo es local. Separación raw / features / conocimiento: `mailcat purge -all` borra asunto, cuerpo y features

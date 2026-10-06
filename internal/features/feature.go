@@ -73,6 +73,7 @@ const (
 	HeadersIsBulk         = "headers.is_bulk"
 	HeadersIsAutomated    = "headers.is_automated"
 	HeadersListID         = "headers.list_id"
+	GmailLabel            = "gmail.label" // one value per Gmail label (lower-cased)
 
 	ThreadPrevCategory = "thread.previous_category"
 	ThreadPrevSender   = "thread.previous_sender"

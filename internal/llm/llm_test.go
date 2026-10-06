@@ -170,3 +170,99 @@ func TestQuestionGeneratorRejectsBadOutput(t *testing.T) {
 		}
 	}
 }
+
+func teacherTree(t *testing.T) *categories.Tree {
+	tr, err := categories.NewTree([]categories.Category{
+		{ID: "finance", Name: "Finanzas", Enabled: true},
+		{ID: "finance.bank", ParentID: "finance", Name: "Banco", Description: "Movimientos y estados de cuenta", Enabled: true},
+		{ID: "work", Name: "Trabajo", Enabled: true},
+		{ID: "old", Name: "Viejo", Enabled: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tr
+}
+
+func TestTeacherCategorizeValidatesModelOutput(t *testing.T) {
+	cases := map[string]struct {
+		answer string
+		want   string
+	}{
+		"ok":               {`{"category":"finance.bank","confidence":0.9,"reason":"x"}`, "finance.bank"},
+		"fenced":           {"```json\n{\"category\":\"work\",\"confidence\":0.8}\n```", "work"},
+		"unknown":          {`{"category":"unknown","confidence":0.9}`, ""},
+		"invented":         {`{"category":"hacked","confidence":0.99}`, ""},
+		"disabled":         {`{"category":"old","confidence":0.99}`, ""},
+		"unsure":           {`{"category":"work","confidence":0.3}`, ""},
+		"confidence>1":     {`{"category":"work","confidence":7}`, ""},
+		"injection in cat": {`{"category":"work; DROP TABLE","confidence":0.9}`, ""},
+	}
+	for name, c := range cases {
+		f := &fake{answer: c.answer}
+		got, _, err := Teacher{P: f, Tree: teacherTree(t)}.Categorize(context.Background(), email.Email{Subject: "s"})
+		if err != nil || got != c.want {
+			t.Errorf("%s: got %q err %v want %q", name, got, err, c.want)
+		}
+	}
+	if _, _, err := (Teacher{P: &fake{answer: "no json here"}, Tree: teacherTree(t)}).Categorize(context.Background(), email.Email{}); err == nil {
+		t.Error("garbage must surface as an error, not as a label")
+	}
+}
+
+func TestTeacherPromptListsCategoriesAndProtectsPrivacy(t *testing.T) {
+	f := &fake{answer: `{"category":"work","confidence":0.9}`}
+	em := email.Email{From: email.Address{Name: "Ana", Email: "ana@corp.example"}, Subject: "Call 555 123 4567", BodyText: "secret body jaime@x.com",
+		Headers: map[string][]string{"list-unsubscribe": {"<x>"}}}
+	tt := Teacher{P: f, Tree: teacherTree(t), SendBody: true}
+	tt.Categorize(context.Background(), em)
+	for _, want := range []string{"finance.bank: Finanzas / Banco", "Movimientos y estados de cuenta", "ana@corp.example", "secret body", "List-Unsubscribe"} {
+		if !strings.Contains(f.got.User, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, f.got.User)
+		}
+	}
+	if strings.Contains(f.got.User, "old:") || strings.Contains(f.got.User, "unknown:") {
+		t.Error("disabled/unknown categories must not be offered")
+	}
+	if !strings.Contains(f.got.System, "untrusted") {
+		t.Error("the prompt must flag the email as untrusted data")
+	}
+	// external provider: redact
+	tt.Redact = true
+	tt.Categorize(context.Background(), em)
+	for _, leak := range []string{"ana@corp.example", "jaime@x.com", "4567"} {
+		if strings.Contains(f.got.User, leak) {
+			t.Errorf("redacted prompt leaks %q:\n%s", leak, f.got.User)
+		}
+	}
+	// no body unless asked
+	tt = Teacher{P: f, Tree: teacherTree(t)}
+	tt.Categorize(context.Background(), em)
+	if strings.Contains(f.got.User, "secret body") {
+		t.Error("body sent although SendBody=false")
+	}
+}
+
+func TestTeacherAnswersQuestions(t *testing.T) {
+	q := questions.Question{ID: "is_work", Text: "¿Es de trabajo?", Feature: "context.is_work", Type: questions.Boolean}
+	q.Normalize()
+	for answer, want := range map[string]struct {
+		id string
+		ok bool
+	}{
+		`{"answer":"yes","confidence":0.9}`:     {"yes", true},
+		`{"answer":"no","confidence":0.8}`:      {"no", true},
+		`{"answer":"unknown","confidence":0.9}`: {"", false},
+		`{"answer":"yes","confidence":0.2}`:     {"", false},
+		`{"answer":"maybe","confidence":0.9}`:   {"", false},
+	} {
+		id, ok, err := Teacher{P: &fake{answer: answer}, Tree: teacherTree(t)}.Answer(context.Background(), email.Email{}, q)
+		if err != nil || id != want.id || ok != want.ok {
+			t.Errorf("%s: %q %v %v", answer, id, ok, err)
+		}
+	}
+	txt := questions.Question{ID: "t", Text: "?", Feature: "a.b", Type: questions.Text}
+	if _, ok, _ := (Teacher{P: &fake{answer: `{"answer":"x","confidence":1}`}}).Answer(context.Background(), email.Email{}, txt); ok {
+		t.Error("only boolean/choice questions are answerable by the model")
+	}
+}

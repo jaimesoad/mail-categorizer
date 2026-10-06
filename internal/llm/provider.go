@@ -42,6 +42,8 @@ type OpenAICompat struct {
 	Model   string
 	APIKey  string
 	Client  *http.Client
+	// ReasoningEffort is forwarded when set (reasoning models: low|medium|high).
+	ReasoningEffort string
 }
 
 // FromConfig builds the provider described by the configuration, enforcing the
@@ -68,7 +70,7 @@ func FromConfig(c config.LLM) (*OpenAICompat, error) {
 	if t <= 0 {
 		t = 20 * time.Second
 	}
-	return &OpenAICompat{BaseURL: strings.TrimRight(c.BaseURL, "/"), Model: c.Model, APIKey: key, Client: &http.Client{Timeout: t}}, nil
+	return &OpenAICompat{BaseURL: strings.TrimRight(c.BaseURL, "/"), Model: c.Model, APIKey: key, ReasoningEffort: c.ReasoningEffort, Client: &http.Client{Timeout: t}}, nil
 }
 
 func isLoopback(host string) bool {
@@ -81,7 +83,7 @@ func isLoopback(host string) bool {
 
 // Complete implements Provider.
 func (p *OpenAICompat) Complete(ctx context.Context, req Request) (string, error) {
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"model":           p.Model,
 		"temperature":     0,
 		"response_format": map[string]string{"type": "json_object"},
@@ -89,7 +91,11 @@ func (p *OpenAICompat) Complete(ctx context.Context, req Request) (string, error
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": req.User},
 		},
-	})
+	}
+	if p.ReasoningEffort != "" {
+		payload["reasoning_effort"] = p.ReasoningEffort
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
@@ -160,3 +166,5 @@ func Redact(s string) string {
 	s = reDigits.ReplaceAllString(s, "[num]")
 	return s
 }
+
+func urlParse(s string) (*url.URL, error) { return url.Parse(s) }

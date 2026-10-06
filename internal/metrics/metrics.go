@@ -33,14 +33,18 @@ type QuestionStat struct {
 
 // Report is the full set of indicators.
 type Report struct {
-	Emails            int `json:"emails"`
-	Resolved          int `json:"resolved"`
-	OpenSessions      int `json:"open_sessions"`
-	VerifiedByUser    int `json:"verified_by_user"`
-	QuestionsAnswered int `json:"questions_answered"`
-	QuestionsSkipped  int `json:"questions_skipped"`
-	Corrections       int `json:"corrections"`
-	ManualLabels      int `json:"manual_labels"`
+	Emails            int     `json:"emails"`
+	Resolved          int     `json:"resolved"`
+	OpenSessions      int     `json:"open_sessions"`
+	VerifiedByUser    int     `json:"verified_by_user"`
+	QuestionsAnswered int     `json:"questions_answered"`
+	QuestionsSkipped  int     `json:"questions_skipped"`
+	Corrections       int     `json:"corrections"`
+	ManualLabels      int     `json:"manual_labels"`
+	LLMLabels         int     `json:"llm_labels"`           // emails labelled by the local LLM teacher
+	AwaitingAudit     int     `json:"awaiting_human_check"` // of those, not yet verified by a person
+	TeacherChecked    int     `json:"teacher_checked"`      // teacher labels a person has verified
+	TeacherAccuracy   float64 `json:"teacher_accuracy"`     // share of those the person agreed with
 
 	ClassificationAccuracy float64 `json:"classification_accuracy"` // over user-verified emails
 	AutoClassificationRate float64 `json:"auto_classification_rate"`
@@ -85,7 +89,7 @@ func Compute(ctx context.Context, db *storage.DB) (Report, error) {
 	rows.Close()
 
 	// interactions
-	irows, err := db.QueryContext(ctx, `SELECT email_id, kind, COALESCE(question_id,''), COALESCE(previous_prediction,''), COALESCE(resulting_category,''), COALESCE(expected_gain,0), COALESCE(realized_gain,0) FROM interactions ORDER BY created_at, rowid`)
+	irows, err := db.QueryContext(ctx, `SELECT email_id, kind, COALESCE(question_id,''), COALESCE(previous_prediction,''), COALESCE(resulting_category,''), COALESCE(expected_gain,0), COALESCE(realized_gain,0) FROM interactions WHERE actor='user' ORDER BY created_at, rowid`)
 	if err != nil {
 		return r, err
 	}
@@ -95,6 +99,7 @@ func Compute(ctx context.Context, db *storage.DB) (Report, error) {
 		exp, real       float64
 	}
 	qs := map[string]*qacc{}
+	verdictKind := map[string]string{}
 	verdicts := map[string]verdict{} // first verdict per email: it judges the system's own output
 	corrected := map[string]bool{}
 	for irows.Next() {
@@ -125,6 +130,7 @@ func Compute(ctx context.Context, db *storage.DB) (Report, error) {
 					prev = categories.UnknownID
 				}
 				verdicts[eid] = verdict{prev, res}
+				verdictKind[eid] = kind
 			}
 			switch kind {
 			case storage.KindCorrect:
@@ -138,6 +144,30 @@ func Compute(ctx context.Context, db *storage.DB) (Report, error) {
 	if err := irows.Err(); err != nil {
 		return r, err
 	}
+
+	var llmRows, auditedRows int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT email_id) FROM interactions WHERE actor='llm' AND kind IN ('confirm','correct','manual')`).Scan(&llmRows); err != nil {
+		return r, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(DISTINCT email_id) FROM interactions WHERE actor='llm' AND kind IN ('confirm','correct','manual')
+		AND email_id IN (SELECT email_id FROM interactions WHERE actor='user' AND kind IN ('confirm','correct','manual'))`).Scan(&auditedRows); err != nil {
+		return r, err
+	}
+	r.LLMLabels, r.AwaitingAudit = llmRows, llmRows-auditedRows
+	llmSet := map[string]bool{}
+	lrows, err := db.QueryContext(ctx, `SELECT DISTINCT email_id FROM interactions WHERE actor='llm' AND kind IN ('confirm','correct','manual')`)
+	if err != nil {
+		return r, err
+	}
+	for lrows.Next() {
+		var id string
+		if err := lrows.Scan(&id); err != nil {
+			lrows.Close()
+			return r, err
+		}
+		llmSet[id] = true
+	}
+	lrows.Close()
 
 	r.Emails = len(sessions)
 	autos, withQ, unknown, askedTotal, correctFinal := 0, 0, 0, 0, 0
@@ -166,6 +196,20 @@ func Compute(ctx context.Context, db *storage.DB) (Report, error) {
 		r.QuestionRate = float64(withQ) / n
 		r.AvgQuestionsPerEmail = float64(askedTotal) / n
 		r.UnknownRate = float64(unknown) / n
+	}
+
+	// how good is the teacher? a person's first verdict on a teacher-labelled email
+	agree := 0
+	for id, k := range verdictKind {
+		if llmSet[id] {
+			r.TeacherChecked++
+			if k == storage.KindConfirm {
+				agree++
+			}
+		}
+	}
+	if r.TeacherChecked > 0 {
+		r.TeacherAccuracy = float64(agree) / float64(r.TeacherChecked)
 	}
 
 	// accuracy / precision / recall over verified emails
@@ -261,6 +305,12 @@ func (r Report) Text() string {
 	fmt.Fprintf(&b, "Veredictos del usuario: %d  → acierto %s, tasa de corrección %s\n", r.VerifiedByUser, pct(r.ClassificationAccuracy), pct(r.CorrectionRate))
 	fmt.Fprintf(&b, "Esfuerzo: %d respuestas, %d omitidas, %d correcciones, %d etiquetados manuales\n", r.QuestionsAnswered, r.QuestionsSkipped, r.Corrections, r.ManualLabels)
 	fmt.Fprintf(&b, "Correctas por unidad de esfuerzo: %.2f\n", r.EffortRatio)
+	if r.LLMLabels > 0 {
+		fmt.Fprintf(&b, "Etiquetados por el LLM local: %d (pendientes de verificación humana: %d)\n", r.LLMLabels, r.AwaitingAudit)
+		if r.TeacherChecked > 0 {
+			fmt.Fprintf(&b, "  Fiabilidad del LLM según tus verificaciones: %s (%d revisados)\n", pct(r.TeacherAccuracy), r.TeacherChecked)
+		}
+	}
 	if len(r.ByCategory) > 0 {
 		b.WriteString("\nPor categoría (precisión / exhaustividad):\n")
 		for _, c := range r.ByCategory {

@@ -37,11 +37,23 @@ api:
 llm:                         # §23 — opcional, apagado por defecto
   enabled: false
   base_url: http://localhost:11434/v1   # cualquier API compatible con OpenAI (p. ej. Ollama)
-  model: llama3.1
+  model: gpt-oss:20b                    # nombre exacto en `ollama list`
   api_key_env: ""
   allow_external: false      # obligatorio para URLs que no sean loopback
   send_body: false           # false: solo se envían features y candidatos, nunca el cuerpo
-  timeout: 20s
+  timeout: 120s              # los modelos locales grandes tardan
+  reasoning_effort: low      # gpt-oss: low = respuestas rápidas (se envía como reasoning_effort)
+
+telegram:                    # preguntas y confirmaciones por Telegram (long polling: solo salida HTTPS)
+  enabled: false
+  token_env: TELEGRAM_BOT_TOKEN   # el token NUNCA va en este archivo
+  chat_id: 0                      # tu chat id: escribe /start al bot y te lo dice
+  show_subject: true              # false: a Telegram solo viaja el dominio del remitente
+  max_open_prompts: 5             # no te inunda: máximo de preguntas sin responder
+  llm_answers_first: false        # true: el LLM local intenta responder antes de molestarte
+
+sync:                        # cómo se reflejan las categorías como etiquetas de Gmail (vía n8n)
+  label_prefix: mailcat      # => mailcat/Finanzas/Banco
 
 # §28 — categorías jerárquicas ("parent" referencia otro id)
 categories:
@@ -208,6 +220,19 @@ rules:
     weight: 0.50
     reason: "El texto parece un boletín."
     when: {feature: content.intent, op: equals, value: newsletter}
+
+  # Etiquetas propias de Gmail (Google Takeout / n8n las exponen en gmail.label)
+  - id: gmail-promotions
+    category: promotions
+    weight: 0.50
+    reason: "Gmail lo marcó como Promociones."
+    when: {feature: gmail.label, op: equals, value: "category promotions"}
+
+  - id: gmail-social
+    category: social
+    weight: 0.55
+    reason: "Gmail lo marcó como Social."
+    when: {feature: gmail.label, op: equals, value: "category social"}
 
   - id: promotion
     category: promotions

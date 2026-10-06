@@ -37,10 +37,10 @@ func (s Signal) Evidence(ctx context.Context, _ email.Email, f *features.Set) ([
 	// A condition that was confirmed for several categories (one domain that
 	// sends both "work" and "meetings" mail) is not discriminative: each rule
 	// only keeps its share of the confirmations seen for that condition.
-	totals := map[string]int{}
+	totals := map[string]float64{}
 	for _, r := range rules {
 		if !r.Negative {
-			totals[r.Key] += r.Confirmations
+			totals[r.Key] += r.EffectiveConfirmations()
 		}
 	}
 	type group struct {
@@ -50,7 +50,7 @@ func (s Signal) Evidence(ctx context.Context, _ email.Email, f *features.Set) ([
 	groups := map[group][]Rule{}
 	for _, r := range rules {
 		if !r.Negative && totals[r.Key] > 0 {
-			r.Weight *= float64(r.Confirmations) / float64(totals[r.Key])
+			r.Weight *= r.EffectiveConfirmations() / totals[r.Key]
 		}
 		if r.Weight < minUsefulWeight {
 			continue
@@ -113,10 +113,11 @@ func describe(r Rule, cat string) string {
 		}
 		val += c.Value
 	}
+	n := r.Confirmations + r.TeacherConfirmations
 	if r.Negative {
-		return fmt.Sprintf("Aprendido: %s (%s) NO suele ir en %s (corregido %d %s)", what, val, cat, r.Confirmations, veces(r.Confirmations))
+		return fmt.Sprintf("Aprendido: %s (%s) NO suele ir en %s (corregido %d %s)", what, val, cat, n, veces(n))
 	}
-	return fmt.Sprintf("Aprendido: %s (%s) se ha clasificado %d %s como %s", what, val, r.Confirmations, veces(r.Confirmations), cat)
+	return fmt.Sprintf("Aprendido: %s (%s) se ha clasificado %d %s como %s", what, val, n, veces(n), cat)
 }
 
 func veces(n int) string {

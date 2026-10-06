@@ -5,3 +5,5 @@
 /sample/
 /dist/
 .DS_Store
+.env
+/data/

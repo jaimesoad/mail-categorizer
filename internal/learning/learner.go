@@ -30,6 +30,10 @@ type Feedback struct {
 	Category string // the category the user established (never "unknown")
 	Previous string // what the system had predicted ("" when none)
 	Kind     Kind
+	// Teacher marks feedback decided by the local LLM rather than a person: it
+	// counts for half, never rejects existing rules and cannot build strong
+	// rules on its own.
+	Teacher bool
 }
 
 // Learner updates learned rules from feedback.
@@ -68,11 +72,10 @@ func (l *Learner) Learn(ctx context.Context, fb Feedback) error {
 		if r.CategoryID == fb.Category || l.related(r.CategoryID, fb.Category) {
 			continue
 		}
-		if !r.Negative {
-			r.Rejections++ // a positive rule claimed a different category
-		} else {
-			continue // a negative rule against an unrelated category stays valid
+		if r.Negative || fb.Teacher {
+			continue // negative rules stay valid; the teacher is not allowed to demote rules
 		}
+		r.Rejections++ // a positive rule claimed a different category
 		l.refresh(&r, now)
 		if err := l.Repo.SaveRule(ctx, r); err != nil {
 			return err
@@ -85,13 +88,13 @@ func (l *Learner) Learn(ctx context.Context, fb Feedback) error {
 
 	for _, g := range gens {
 		// 2. positive evidence for the established category
-		if err := l.bump(ctx, fb.Category, g, false, now); err != nil {
+		if err := l.bump(ctx, fb.Category, g, false, fb.Teacher, now); err != nil {
 			return err
 		}
 		// 3. a negative rule that said "not this category" was contradicted
 		if neg, err := l.Repo.GetRule(ctx, fb.Category, g.Key, true); err != nil {
 			return err
-		} else if neg != nil {
+		} else if neg != nil && !fb.Teacher {
 			neg.Rejections++
 			l.refresh(neg, now)
 			if err := l.Repo.SaveRule(ctx, *neg); err != nil {
@@ -101,7 +104,7 @@ func (l *Learner) Learn(ctx context.Context, fb Feedback) error {
 		// 4. the wrong prediction becomes negative knowledge (§21), except for
 		//    the most general level, which would over-penalize.
 		if wrongPrev && g.Kind != KindIntent {
-			if err := l.bump(ctx, fb.Previous, g, true, now); err != nil {
+			if err := l.bump(ctx, fb.Previous, g, true, fb.Teacher, now); err != nil {
 				return err
 			}
 		}
@@ -109,7 +112,7 @@ func (l *Learner) Learn(ctx context.Context, fb Feedback) error {
 	return nil
 }
 
-func (l *Learner) bump(ctx context.Context, category string, g Generalization, negative bool, now time.Time) error {
+func (l *Learner) bump(ctx context.Context, category string, g Generalization, negative, teacher bool, now time.Time) error {
 	r, err := l.Repo.GetRule(ctx, category, g.Key, negative)
 	if err != nil {
 		return err
@@ -118,17 +121,21 @@ func (l *Learner) bump(ctx context.Context, category string, g Generalization, n
 		r = &Rule{CategoryID: category, Key: g.Key, Kind: g.Kind, Conditions: g.Conds, Negative: negative, CreatedAt: now}
 	}
 	r.Observations++
-	r.Confirmations++
+	if teacher {
+		r.TeacherConfirmations++
+	} else {
+		r.Confirmations++
+	}
 	l.refresh(r, now)
 	return l.Repo.SaveRule(ctx, *r)
 }
 
 func (l *Learner) refresh(r *Rule, now time.Time) {
-	r.Weight = Weight(weightCap[r.Kind], r.Confirmations, r.Rejections)
-	r.UpdatedAt = now
 	if r.Kind == "" {
 		r.Kind = KindSenderDomain
 	}
+	r.Weight = RuleWeight(*r)
+	r.UpdatedAt = now
 }
 
 // related: one category is the ancestor of the other, so confirming one does

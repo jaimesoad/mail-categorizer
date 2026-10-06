@@ -14,7 +14,10 @@ import (
 // Label is the best known truth about an email's category.
 type Label struct {
 	Category string
-	Source   string // "user" (explicit) | "answers" (resolved through the user's answers)
+	// Source: "user" (explicit human verdict) | "answers" (resolved through the
+	// user's answers) | "llm" (decided by the local LLM "teacher"). A human
+	// verdict always overrides the teacher.
+	Source string
 }
 
 // Labels returns the trusted labels of all emails. Fully automatic
@@ -26,34 +29,43 @@ func (d *DB) Labels(ctx context.Context) (map[string]Label, error) {
 		return c.(map[string]Label), nil
 	}
 	out := map[string]Label{}
-	rows, err := d.QueryContext(ctx, `SELECT email_id, final_category FROM sessions WHERE resolved_by='answers' AND final_category IS NOT NULL AND final_category!='unknown'`)
+	rows, err := d.QueryContext(ctx, `SELECT email_id, final_category, resolved_by FROM sessions WHERE resolved_by IN ('answers','teacher') AND final_category IS NOT NULL AND final_category!='unknown'`)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var id, cat string
-		if err := rows.Scan(&id, &cat); err != nil {
+		var id, cat, by string
+		if err := rows.Scan(&id, &cat, &by); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		out[id] = Label{cat, "answers"}
+		src := "answers"
+		if by == "teacher" {
+			src = "llm"
+		}
+		out[id] = Label{cat, src}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return nil, err
 	}
 	rows.Close()
-	rows, err = d.QueryContext(ctx, `SELECT email_id, resulting_category FROM interactions WHERE kind IN ('confirm','correct','manual') AND resulting_category IS NOT NULL ORDER BY created_at, rowid`)
+	// teacher verdicts first, human ones last: a person always has the final word
+	rows, err = d.QueryContext(ctx, `SELECT email_id, resulting_category, actor FROM interactions WHERE kind IN ('confirm','correct','manual') AND resulting_category IS NOT NULL ORDER BY (actor='user'), created_at, rowid`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, cat string
-		if err := rows.Scan(&id, &cat); err != nil {
+		var id, cat, actor string
+		if err := rows.Scan(&id, &cat, &actor); err != nil {
 			return nil, err
 		}
-		out[id] = Label{cat, "user"} // later interactions override earlier ones
+		src := "user"
+		if actor == ActorLLM {
+			src = "llm"
+		}
+		out[id] = Label{cat, src} // later interactions override earlier ones
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -74,7 +86,7 @@ func (d *DB) QuestionStats(ctx context.Context) (map[string]questions.Stats, err
 	if err != nil {
 		return nil, err
 	}
-	rows, err := d.QueryContext(ctx, `SELECT question_id, email_id, kind, COALESCE(answer,'') FROM interactions WHERE kind IN ('answer','skip') AND question_id IS NOT NULL`)
+	rows, err := d.QueryContext(ctx, `SELECT question_id, email_id, kind, COALESCE(answer,'') FROM interactions WHERE kind IN ('answer','skip') AND question_id IS NOT NULL AND actor='user'`)
 	if err != nil {
 		return nil, err
 	}
@@ -133,8 +145,11 @@ func (d *DB) LabeledDocs(ctx context.Context, maxChars int) ([]similarity.Doc, e
 			body = body[:maxChars]
 		}
 		trust := 1.0
-		if lab.Source == "answers" {
+		switch lab.Source {
+		case "answers":
 			trust = 0.7
+		case "llm":
+			trust = 0.6
 		}
 		docs = append(docs, similarity.Doc{ID: id, Category: lab.Category, Text: subj + " " + subj + " " + body, Trust: trust})
 	}

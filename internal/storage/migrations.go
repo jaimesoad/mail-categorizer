@@ -128,4 +128,29 @@ CREATE TABLE learned_rules (
 CREATE UNIQUE INDEX idx_rules_unique ON learned_rules(category_id, key, negative);
 CREATE INDEX idx_rules_key ON learned_rules(key);
 `,
+	// 2 — who made a label (user vs local LLM "teacher"), teacher-sourced rule counts, Telegram prompts
+	`
+ALTER TABLE interactions   ADD COLUMN actor TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE learned_rules  ADD COLUMN teacher_confirmations INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE prompts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id    TEXT NOT NULL,
+    kind        TEXT NOT NULL,            -- question | confirm | category
+    question_id TEXT NOT NULL DEFAULT '',
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL DEFAULT 0,
+    payload     TEXT NOT NULL DEFAULT '',
+    created_at  DATETIME NOT NULL,
+    resolved_at DATETIME,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX idx_prompts_unique ON prompts(email_id, kind, question_id);
+CREATE INDEX idx_prompts_open ON prompts(resolved_at);
+`,
+	// 3 — quiet sessions (bulk history import never pings the user) and label-sync bookkeeping
+	`
+ALTER TABLE sessions ADD COLUMN quiet INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN synced_category TEXT;
+`,
 }

@@ -16,9 +16,12 @@ import (
 	"github.com/jaimesoad/mail-categorizer/internal/config"
 	"github.com/jaimesoad/mail-categorizer/internal/engine"
 	"github.com/jaimesoad/mail-categorizer/internal/eval"
+	"github.com/jaimesoad/mail-categorizer/internal/llm"
 	"github.com/jaimesoad/mail-categorizer/internal/metrics"
 	"github.com/jaimesoad/mail-categorizer/internal/samples"
+	"github.com/jaimesoad/mail-categorizer/internal/telegram"
 	"log/slog"
+	"net/http"
 )
 
 func cmdInit(e env, args []string) error {
@@ -271,7 +274,40 @@ func cmdServe(ctx context.Context, e env, eng *engine.Engine, args []string) err
 		return fmt.Errorf("la API escucha en %s (no es loopback) sin token: define %s o usa 127.0.0.1", *addr, eng.Config().API.TokenEnv)
 	}
 	log.Info("API escuchando", "addr", *addr, "auth", token != "")
-	return api.New(eng, token, log).Serve(ctx, *addr)
+
+	tg := eng.Config().Telegram
+	if !tg.Enabled {
+		return api.New(eng, token, log).Serve(ctx, *addr)
+	}
+	botToken := os.Getenv(tg.TokenEnv)
+	if botToken == "" {
+		return fmt.Errorf("telegram.enabled pero la variable %s está vacía (el token se pide a @BotFather y nunca va en el YAML)", tg.TokenEnv)
+	}
+	opt := telegram.Options{ChatID: tg.ChatID, ShowSubject: tg.ShowSubject, MaxOpenPrompts: tg.MaxOpenPrompts, Log: log}
+	if tg.LLMAnswers {
+		cfg := eng.Config().LLM
+		p, err := llm.FromConfig(cfg)
+		if err != nil {
+			return fmt.Errorf("telegram.llm_answers_first requiere un LLM válido: %w", err)
+		}
+		opt.Answerer = llm.Teacher{P: p, Tree: eng.Tree(), SendBody: cfg.SendBody, Redact: !p.Local()}
+	}
+	if tg.ChatID == 0 {
+		log.Warn("telegram.chat_id es 0: escribe /start al bot para conocer tu chat id; hasta entonces no envía nada")
+	}
+	bot := telegram.New(&telegram.Client{Token: botToken}, eng, opt)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errc := make(chan error, 2)
+	go func() { errc <- bot.Run(runCtx) }()
+	go func() { errc <- api.New(eng, token, log).Serve(runCtx, *addr) }()
+	err := <-errc // if either side stops (port busy, bad token...), stop the other too
+	cancel()
+	<-errc
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func isLoopbackAddr(addr string) bool {
@@ -312,5 +348,33 @@ func cmdBackup(ctx context.Context, e env, eng *engine.Engine, args []string) er
 		return err
 	}
 	fmt.Fprintf(e.out, "copia escrita en %s\n", args[0])
+	return nil
+}
+
+func nowUTC() time.Time { return time.Now().UTC() }
+
+// cmdHealth is the container healthcheck (distroless images have no curl).
+func cmdHealth(ctx context.Context, e env, args []string) error {
+	fs := flag.NewFlagSet("health", flag.ContinueOnError)
+	fs.SetOutput(e.errw)
+	addr := fs.String("addr", "127.0.0.1:8080", "dirección de la API")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+*addr+"/healthz", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("healthz: HTTP %d", resp.StatusCode)
+	}
+	fmt.Fprintln(e.out, "ok")
 	return nil
 }

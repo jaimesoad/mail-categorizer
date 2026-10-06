@@ -1,0 +1,113 @@
+{
+  "name": "mailcat · 1 Clasificar correos nuevos",
+  "nodes": [
+    {
+      "id": "d223eeee-4317-4175-99e6-57e1b3f6d3c1",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ]
+        },
+        "options": {
+          "downloadAttachments": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "ede04aaf-e99e-42bb-b8ce-6632aa9ee863",
+      "name": "Preparar para mailcat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Convierte un mensaje de Gmail (Gmail Trigger / nodo Gmail con \"Simplify\" desactivado) al JSON de mailcat.\nconst clean = (s) => (s === undefined || s === null ? '' : String(s));\nreturn $input.all().map(({ json: m }) => {\n  const from = m.from && m.from.value && m.from.value[0];\n  const sender = from\n    ? (from.name ? `${from.name} <${from.address}>` : from.address)\n    : clean(m.from && m.from.text ? m.from.text : m.from);\n  // Las etiquetas propias de Gmail (CATEGORY_PROMOTIONS...) son una señal útil para mailcat.\n  const labels = (m.labelIds || []).map(l => String(l).toLowerCase().replace(/_/g, ' ')).join(',');\n  const h = m.headers || {};\n  const headers = {};\n  for (const k of ['list-unsubscribe', 'list-id', 'precedence', 'auto-submitted']) {\n    if (h[k]) headers[k] = clean(h[k]);\n  }\n  if (labels) headers['x-gmail-labels'] = labels;\n  return { json: {\n    id: `gmail-${m.id}`,\n    sender,\n    subject: clean(m.subject),\n    body: clean(m.text || m.snippet).slice(0, 20000),\n    message_id: clean(h['message-id']).replace(/[<>]/g, ''),\n    in_reply_to: clean(h['in-reply-to']).replace(/[<>]/g, ''),\n    received_at: m.date ? new Date(m.date).toISOString() : undefined,\n    headers,\n  } };\n});"
+      }
+    },
+    {
+      "id": "51eed676-f27b-4b88-9308-4da1af15ebe3",
+      "name": "Clasificar en mailcat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://mailcat:8080/v1/emails/classify",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "mailcat token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Preparar para mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar para mailcat": {
+      "main": [
+        [
+          {
+            "node": "Clasificar en mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "note": "Cada minuto lee correos nuevos de la bandeja de entrada y los envía a mailcat. Las preguntas llegan por Telegram; las etiquetas las aplica el workflow 2."
+  }
+}

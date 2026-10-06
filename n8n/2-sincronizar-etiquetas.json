@@ -1,0 +1,207 @@
+{
+  "name": "mailcat · 2 Sincronizar etiquetas",
+  "nodes": [
+    {
+      "id": "91198838-316e-4ab2-83d6-a6e4563a1319",
+      "name": "Cada minuto",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0803fdee-2f8b-4b61-b30e-cd7dfbdd059c",
+      "name": "Etiquetas de Gmail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "47b8de18-f045-4ea1-b6b1-110214006cbb",
+      "name": "Pendientes de mailcat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://mailcat:8080/v1/sync/pending?limit=50",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "mailcat token"
+        }
+      }
+    },
+    {
+      "id": "016e32b1-5ac4-4464-909d-f90413ac22d6",
+      "name": "Resolver etiquetas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Une las etiquetas de Gmail con lo que mailcat pide aplicar.\nconst labels = $('Etiquetas de Gmail').first().json.labels || [];\nconst idByName = Object.fromEntries(labels.map(l => [l.name, l.id]));\nconst items = ($input.first().json.items) || [];\nconst out = [];\nconst missing = new Set();\nfor (const it of items) {\n  const add = idByName[it.label];\n  if (!add) { missing.add(it.label); continue; }\n  const prev = it.previous_label ? idByName[it.previous_label] : undefined;\n  out.push({ json: {\n    email_id: it.email_id,\n    category: it.category,\n    messageId: it.email_id.replace(/^gmail-/, ''),\n    modify: { addLabelIds: [add], removeLabelIds: prev && prev !== add ? [prev] : [] },\n  } });\n}\nif (missing.size) console.log('Faltan estas etiquetas en Gmail (ejecuta el workflow \"3 Crear etiquetas\"):', [...missing]);\nreturn out;"
+      }
+    },
+    {
+      "id": "4db21bb1-a3ef-4b82-bc50-bfeaab0d356c",
+      "name": "Aplicar etiqueta en Gmail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://gmail.googleapis.com/gmail/v1/users/me/messages/{{ $json.messageId }}/modify",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.modify) }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "fb0a8956-02a4-41e1-b5d4-c6678bcb5806",
+      "name": "Confirmar a mailcat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://mailcat:8080/v1/sync/ack",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ email_id: $('Resolver etiquetas').item.json.email_id, category: $('Resolver etiquetas').item.json.category }) }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "mailcat token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Cada minuto": {
+      "main": [
+        [
+          {
+            "node": "Etiquetas de Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Etiquetas de Gmail": {
+      "main": [
+        [
+          {
+            "node": "Pendientes de mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pendientes de mailcat": {
+      "main": [
+        [
+          {
+            "node": "Resolver etiquetas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolver etiquetas": {
+      "main": [
+        [
+          {
+            "node": "Aplicar etiqueta en Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aplicar etiqueta en Gmail": {
+      "main": [
+        [
+          {
+            "node": "Confirmar a mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "note": "Aplica en Gmail la etiqueta mailcat/<categoría> a lo ya resuelto (incluye correcciones tuyas y respuestas de Telegram) y quita la anterior. Solo la salida 'success' del nodo de Gmail llega al ack."
+  }
+}

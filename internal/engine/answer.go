@@ -22,7 +22,7 @@ func (e *Engine) Answer(ctx context.Context, emailID, questionID, raw string) (*
 	if err != nil {
 		return nil, err
 	}
-	if st.Decision == DecisionKnow || st.Decision == DecisionUser {
+	if st.Decision == DecisionKnow || st.Decision == DecisionUser || st.Decision == DecisionTeacher {
 		return nil, ErrConflict2("session already resolved")
 	}
 	q, ok := e.questionByID(st, questionID)
@@ -91,6 +91,10 @@ func (e *Engine) Answer(ctx context.Context, emailID, questionID, raw string) (*
 	if err := e.advance(ctx, st, em, set); err != nil {
 		return nil, err
 	}
+	teacher := actorOf(ctx) == ActorLLM
+	if teacher && st.ResolvedBy == ResolvedAnswers {
+		st.ResolvedBy = ResolvedTeacher // keep the trust level of who answered
+	}
 	if err := e.persist(ctx, emailID, st, ""); err != nil {
 		return nil, err
 	}
@@ -98,13 +102,14 @@ func (e *Engine) Answer(ctx context.Context, emailID, questionID, raw string) (*
 	if err := e.db.AddInteraction(ctx, storage.Interaction{
 		EmailID: emailID, SessionID: sessionID(ctx, e.db, emailID), Kind: storage.KindAnswer, QuestionID: questionID, Answer: rec.Answer,
 		PreviousPrediction: prevBest, ResultingCategory: st.Candidates[0].Category, ExpectedGain: expected, RealizedGain: rec.Gain,
+		Actor: string(actorOf(ctx)),
 	}, now); err != nil {
 		return nil, err
 	}
 
 	learned := false
-	if st.Decision == DecisionKnow && st.ResolvedBy == ResolvedAnswers {
-		learned, err = e.learn(ctx, emailID, set, st.Final, "", learning.KindAnswer)
+	if st.Decision == DecisionKnow && (st.ResolvedBy == ResolvedAnswers || st.ResolvedBy == ResolvedTeacher) {
+		learned, err = e.learn(ctx, emailID, set, st.Final, "", learning.KindAnswer, teacher)
 		if err != nil {
 			return nil, err
 		}
@@ -153,6 +158,7 @@ func (e *Engine) Skip(ctx context.Context, emailID, questionID string) (*Outcome
 	}
 	if err := e.db.AddInteraction(ctx, storage.Interaction{
 		EmailID: emailID, SessionID: sessionID(ctx, e.db, emailID), Kind: storage.KindSkip, QuestionID: questionID,
+		Actor: string(actorOf(ctx)),
 	}, e.now()); err != nil {
 		return nil, err
 	}
@@ -216,10 +222,10 @@ func ErrConflict2(format string, a ...any) error {
 	return wrap(ErrConflict, format, a...)
 }
 
-func (e *Engine) learn(ctx context.Context, emailID string, set *features.Set, cat, prev string, kind learning.Kind) (bool, error) {
+func (e *Engine) learn(ctx context.Context, emailID string, set *features.Set, cat, prev string, kind learning.Kind, teacher bool) (bool, error) {
 	if e.learner == nil || cat == "" || cat == categories.UnknownID {
 		return false, nil
 	}
-	err := e.learner.Learn(ctx, learning.Feedback{EmailID: emailID, Features: set, Category: cat, Previous: prev, Kind: kind})
+	err := e.learner.Learn(ctx, learning.Feedback{EmailID: emailID, Features: set, Category: cat, Previous: prev, Kind: kind, Teacher: teacher})
 	return err == nil, err
 }

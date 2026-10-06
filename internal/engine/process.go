@@ -239,10 +239,11 @@ func (e *Engine) persist(ctx context.Context, emailID string, st *sessionState, 
 	}
 	row := storage.SessionRow{
 		EmailID: emailID, Status: status, InitialDecision: st.Initial, QuestionsAsked: len(st.Asked),
-		FinalCategory: final, ResolvedBy: st.ResolvedBy, State: st.marshal(),
+		FinalCategory: final, ResolvedBy: st.ResolvedBy, State: st.marshal(), Quiet: isQuiet(ctx),
 	}
 	if existing, err := e.db.GetSession(ctx, emailID); err == nil {
 		row.ID = existing.ID
+		row.Quiet = existing.Quiet // a session keeps the mode it was created in
 	}
 	if status == "open" {
 		row.FinalCategory, row.ResolvedBy = "", ""
@@ -310,6 +311,8 @@ func (e *Engine) outcome(ctx context.Context, emailID string, st *sessionState) 
 		o.RequestConfirmation = true
 	case DecisionKnow:
 		o.RequestConfirmation = st.answered() == 0 && e.shouldConfirm(emailID, st.FinalScore)
+	case DecisionTeacher:
+		o.RequestConfirmation = false // verification is requested in batches (audit), not one by one
 	}
 	return o, nil
 }

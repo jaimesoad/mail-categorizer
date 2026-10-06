@@ -18,7 +18,7 @@ import (
 var keptHeaders = []string{
 	"List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted", "X-Auto-Response-Suppress",
 	"X-Mailer", "Reply-To", "In-Reply-To", "References", "Return-Path", "Content-Type",
-	"MIME-Version", "X-Priority", "Importance",
+	"MIME-Version", "X-Priority", "Importance", "X-Gmail-Labels",
 }
 
 // ParseEML parses RFC 5322 / MIME bytes into an Email. MIME decoding, charsets

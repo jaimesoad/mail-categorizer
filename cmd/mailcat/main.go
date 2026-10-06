@@ -31,8 +31,12 @@ Comandos:
   rules [-category X]                    muestra lo aprendido
   metrics [-json]                        métricas de calidad y esfuerzo
   eval -data <dir> [-json]               evaluación offline (dir/<categoría>/*.eml)
+  pretrain (-mbox f | -eml dir) [...]    preentrena etiquetando un buzón existente con el LLM local
+  audit [-n 20]                          verifica por muestreo lo que etiquetó el LLM
+  export -out conocimiento.db            copia SIN contenido de correos (para llevarla a la nube)
   sample-data -out <dir> [-per 40]       genera un buzón sintético reproducible
-  serve [-addr 127.0.0.1:8080]           API REST
+  serve [-addr 127.0.0.1:8080]           API REST (+ bot de Telegram si está activado)
+  health [-addr 127.0.0.1:8080]          comprueba que la API responde (healthcheck de Docker)
   purge (-id X | -all) [-delete]         borra el contenido de correos conservando lo aprendido
   backup <destino.db>                    copia consistente de la base de datos
 
@@ -51,6 +55,7 @@ type env struct {
 	out, errw  io.Writer
 	configPath string
 	dbPath     string
+	explicit   bool // -config was given on the command line (a missing file is then an error)
 }
 
 func run(args []string, in io.Reader, out, errw io.Writer) error {
@@ -67,6 +72,11 @@ func run(args []string, in io.Reader, out, errw io.Writer) error {
 		}
 		return err
 	}
+	gfs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			e.explicit = true
+		}
+	})
 	rest := gfs.Args()
 	if len(rest) == 0 {
 		gfs.Usage()
@@ -103,6 +113,14 @@ func run(args []string, in io.Reader, out, errw io.Writer) error {
 		return withEngine(ctx, e, func(eng *engine.Engine) error { return cmdRules(ctx, e, eng, cargs) })
 	case "metrics":
 		return withEngine(ctx, e, func(eng *engine.Engine) error { return cmdMetrics(ctx, e, eng, cargs) })
+	case "health":
+		return cmdHealth(ctx, e, cargs)
+	case "pretrain":
+		return cmdPretrain(ctx, e, cargs)
+	case "audit":
+		return cmdAudit(ctx, e, cargs)
+	case "export":
+		return withEngine(ctx, e, func(eng *engine.Engine) error { return cmdExport(ctx, e, eng, cargs) })
 	case "serve":
 		return withEngine(ctx, e, func(eng *engine.Engine) error { return cmdServe(ctx, e, eng, cargs) })
 	case "purge":
@@ -121,6 +139,8 @@ func loadConfig(e env) (*config.Config, error) {
 		if _, err := os.Stat("mailcat.yaml"); err == nil {
 			path = "mailcat.yaml"
 		}
+	} else if _, err := os.Stat(path); err != nil && !e.explicit {
+		path = "" // MAILCAT_CONFIG points to a file that does not exist yet: use the embedded default
 	}
 	cfg, err := config.LoadOrDefault(path)
 	if err != nil {
@@ -133,9 +153,19 @@ func loadConfig(e env) (*config.Config, error) {
 }
 
 func withEngine(ctx context.Context, e env, fn func(*engine.Engine) error) error {
+	return withEngineOpts(ctx, e, true, nil, fn)
+}
+
+// withEngineOpts builds the engine. llmHooks=false skips the per-email LLM
+// intent/question helpers (pre-training calls the model itself, once per email).
+// tweak may adjust the loaded configuration (CLI flag overrides).
+func withEngineOpts(ctx context.Context, e env, llmHooks bool, tweak func(*config.Config), fn func(*engine.Engine) error) error {
 	cfg, err := loadConfig(e)
 	if err != nil {
 		return err
+	}
+	if tweak != nil {
+		tweak(cfg)
 	}
 	built, err := cfg.Build()
 	if err != nil {
@@ -148,7 +178,7 @@ func withEngine(ctx context.Context, e env, fn func(*engine.Engine) error) error
 	defer db.Close()
 
 	var opts []engine.Option
-	if cfg.LLM.Enabled {
+	if cfg.LLM.Enabled && llmHooks {
 		p, err := llm.FromConfig(cfg.LLM)
 		if err != nil {
 			return err

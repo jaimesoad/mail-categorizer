@@ -245,3 +245,36 @@ func (e *Engine) RejectQuestion(ctx context.Context, id string) error {
 	}
 	return e.ReloadQuestions(ctx)
 }
+
+// Actor says who is feeding answers and labels into the engine.
+type Actor string
+
+const (
+	// ActorUser is a person: full weight.
+	ActorUser Actor = "user"
+	// ActorLLM is the local LLM "teacher" used to pre-train or to answer
+	// questions on the user's behalf: lower trust, never overrides a person.
+	ActorLLM Actor = "llm"
+)
+
+type actorKey struct{}
+
+// WithActor returns a context whose answers/labels are attributed to a.
+func WithActor(ctx context.Context, a Actor) context.Context {
+	return context.WithValue(ctx, actorKey{}, a)
+}
+
+func actorOf(ctx context.Context) Actor {
+	if a, ok := ctx.Value(actorKey{}).(Actor); ok && a != "" {
+		return a
+	}
+	return ActorUser
+}
+
+type quietKey struct{}
+
+// WithQuiet marks processing as a bulk import: the resulting sessions are kept
+// out of the notification flow (Telegram) and the label sync.
+func WithQuiet(ctx context.Context) context.Context { return context.WithValue(ctx, quietKey{}, true) }
+
+func isQuiet(ctx context.Context) bool { q, _ := ctx.Value(quietKey{}).(bool); return q }

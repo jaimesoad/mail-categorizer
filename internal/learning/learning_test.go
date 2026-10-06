@@ -72,7 +72,7 @@ func fs(domain string, free bool) *features.Set {
 
 func TestWeightCurveMatchesSpec(t *testing.T) {
 	for conf, want := range map[int]float64{1: 0.20, 3: 0.45, 10: 0.80} {
-		if got := Weight(0.9, conf, 0); math.Abs(got-want) > 0.04 {
+		if got := Weight(0.9, float64(conf), 0); math.Abs(got-want) > 0.04 {
 			t.Errorf("conf=%d: got %v want ≈%v", conf, got, want)
 		}
 	}

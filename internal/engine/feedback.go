@@ -75,6 +75,10 @@ func (e *Engine) label(ctx context.Context, emailID string, st *sessionState, ca
 	if st.Decision == DecisionAsk && len(st.Candidates) > 0 {
 		prev = st.Candidates[0].Category
 	}
+	// a human confirming/correcting the teacher's label is a verdict on the teacher
+	if st.Decision == DecisionTeacher {
+		prev = st.Final
+	}
 	kind, lkind := storage.KindManual, learning.KindManual
 	switch {
 	case prev == cat && st.Decision != DecisionAsk:
@@ -87,19 +91,25 @@ func (e *Engine) label(ctx context.Context, emailID string, st *sessionState, ca
 		}
 	}
 
+	teacher := actorOf(ctx) == ActorLLM
 	st.Decision, st.Final, st.FinalScore, st.ResolvedBy = DecisionUser, cat, 1.0, ResolvedUser
 	st.Method = string(classifier.MethodUser)
+	if teacher {
+		// the teacher's label is a strong suggestion, not a human verdict
+		st.Decision, st.FinalScore, st.ResolvedBy = DecisionTeacher, 0.9, ResolvedTeacher
+		st.Method = string(classifier.MethodModel)
+	}
 	st.Pending = nil
 	if err := e.persist(ctx, emailID, st, ""); err != nil {
 		return nil, err
 	}
 	if err := e.db.AddInteraction(ctx, storage.Interaction{
 		EmailID: emailID, SessionID: sessionID(ctx, e.db, emailID), Kind: kind,
-		PreviousPrediction: prev, ResultingCategory: cat,
+		PreviousPrediction: prev, ResultingCategory: cat, Actor: string(actorOf(ctx)),
 	}, e.now()); err != nil {
 		return nil, err
 	}
-	learned, err := e.learn(ctx, emailID, set, cat, prev, lkind)
+	learned, err := e.learn(ctx, emailID, set, cat, prev, lkind, teacher)
 	if err != nil {
 		return nil, err
 	}

@@ -71,6 +71,23 @@ type LLM struct {
 	AllowExternal bool          `yaml:"allow_external"` // required for any non-loopback base_url
 	SendBody      bool          `yaml:"send_body"`      // false: only features and candidates leave the process
 	Timeout       time.Duration `yaml:"timeout"`
+	// ReasoningEffort ("low"|"medium"|"high") is forwarded to reasoning models such as gpt-oss.
+	ReasoningEffort string `yaml:"reasoning_effort"`
+}
+
+// Telegram configures the question/confirmation bot. Off by default.
+type Telegram struct {
+	Enabled        bool   `yaml:"enabled"`
+	TokenEnv       string `yaml:"token_env"`         // env var holding the bot token (from @BotFather)
+	ChatID         int64  `yaml:"chat_id"`           // the only chat the bot talks to and obeys
+	ShowSubject    bool   `yaml:"show_subject"`      // false: only the sender's domain is sent to Telegram
+	MaxOpenPrompts int    `yaml:"max_open_prompts"`  // do not flood: at most N unanswered prompts
+	LLMAnswers     bool   `yaml:"llm_answers_first"` // let the local LLM try to answer questions before bothering you
+}
+
+// Sync configures how categories are mirrored as labels in the external mailbox.
+type Sync struct {
+	LabelPrefix string `yaml:"label_prefix"` // Gmail label root: "mailcat" => mailcat/Finanzas/Banco
 }
 
 // CategoryCfg is a category as written in YAML.
@@ -122,6 +139,8 @@ type Config struct {
 	Privacy      Privacy                `yaml:"privacy"`
 	API          API                    `yaml:"api"`
 	LLM          LLM                    `yaml:"llm"`
+	Telegram     Telegram               `yaml:"telegram"`
+	Sync         Sync                   `yaml:"sync"`
 
 	Categories []CategoryCfg `yaml:"categories"`
 	Questions  []QuestionCfg `yaml:"questions"`
@@ -139,7 +158,9 @@ func Defaults() Config {
 		Selector:     QuestionParams{MinGain: 0.05},
 		Privacy:      Privacy{StoreBody: true, MaxBodyChars: 20000},
 		API:          API{Addr: "127.0.0.1:8080", TokenEnv: "MAILCAT_TOKEN"},
-		LLM:          LLM{Timeout: 20 * time.Second},
+		LLM:          LLM{Timeout: 120 * time.Second},
+		Telegram:     Telegram{TokenEnv: "TELEGRAM_BOT_TOKEN", ShowSubject: true, MaxOpenPrompts: 5},
+		Sync:         Sync{LabelPrefix: "mailcat"},
 		Learning:     struct{ Enabled bool }{Enabled: true},
 	}
 }

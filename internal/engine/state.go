@@ -16,6 +16,7 @@ const (
 	DecisionAsk     = "ask"
 	DecisionUnknown = "unknown"
 	DecisionUser    = "user"
+	DecisionTeacher = "teacher" // labelled by the local LLM, pending human verification
 )
 
 // Resolution sources stored in sessions.resolved_by.
@@ -26,6 +27,7 @@ const (
 	ResolvedAncestor  = "ancestor"
 	ResolvedUnknown   = "unknown"
 	ResolvedUser      = "user"
+	ResolvedTeacher   = "teacher"
 )
 
 type answerRec struct {

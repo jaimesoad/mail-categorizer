@@ -1,0 +1,27 @@
+# mailcat junto a tu n8n.
+#   1) cp .env.example .env   y rellénalo
+#   2) docker network ls      → pon en N8N_NETWORK la red donde corre tu contenedor n8n
+#   3) docker compose run --rm mailcat init -dir /data   (crea ./data/mailcat.yaml; edítalo)
+#   4) docker compose up -d --build
+services:
+  mailcat:
+    build: .
+    image: mailcat:local
+    restart: unless-stopped
+    # Corre con tu usuario para poder escribir en ./data (carpeta con mailcat.yaml y la base de datos)
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      MAILCAT_TOKEN: ${MAILCAT_TOKEN:?define MAILCAT_TOKEN en .env (openssl rand -hex 32)}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8080:8080"   # solo tu máquina; n8n accede por la red de Docker
+    networks:
+      - default
+      - n8n
+
+networks:
+  n8n:
+    external: true
+    name: ${N8N_NETWORK:-n8n_default}

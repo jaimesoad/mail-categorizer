@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestMigrationsAreIdempotentAndFileBacked(t *testing.T) {
 	}
 	var v string
 	db2.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key='version'`).Scan(&v)
-	if v != "1" {
+	if v != strconv.Itoa(len(migrations)) {
 		t.Errorf("version = %q", v)
 	}
 }

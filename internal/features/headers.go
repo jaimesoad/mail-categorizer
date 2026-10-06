@@ -54,6 +54,12 @@ func (HeaderExtractor) Extract(_ context.Context, e email.Email) ([]Feature, err
 	auto := strings.ToLower(e.Header("Auto-Submitted"))
 	boolf(HeadersIsAutomated, (auto != "" && auto != "no") || e.HasHeader("X-Auto-Response-Suppress"))
 
+	// Gmail's own labels (Takeout exports them): "Inbox,Category Promotions,Important"
+	for _, l := range strings.Split(e.Header("X-Gmail-Labels"), ",") {
+		if l = strings.ToLower(strings.TrimSpace(l)); l != "" {
+			add(GmailLabel, l, 1.0)
+		}
+	}
 	subjReply, subjFwd := subjectMarkers(e.Subject)
 	boolf(HeadersIsReply, e.InReplyTo != "" || len(e.References) > 0 || subjReply)
 	boolf(HeadersIsForward, subjFwd)

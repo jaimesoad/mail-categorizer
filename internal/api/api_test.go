@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -190,4 +191,88 @@ func TestRawEMLAndPurge(t *testing.T) {
 	if code, _ := call(t, srv, "GET", "/v1/emails/raw1", "", nil); code != 404 {
 		t.Errorf("deleted email still there: %d", code)
 	}
+}
+
+func TestQuietImportSyncQueueAndAck(t *testing.T) {
+	srv := newServer(t, "")
+	// a normal email that resolves automatically => appears in the sync queue
+	call(t, srv, "POST", "/v1/emails/classify", "", map[string]any{
+		"id": "gmail-A1", "sender": "alerts@mybank.example", "subject": "Transaction completed", "body": "A transaction of $85.40 was completed on your account."})
+	// a historical email imported quietly: never synced, never prompts
+	call(t, srv, "POST", "/v1/emails/classify?quiet=true", "", map[string]any{
+		"id": "gmail-OLD", "sender": "alerts@mybank.example", "subject": "Transaction completed long ago", "body": "A transaction of $10.00 was completed on your account."})
+
+	code, out := call(t, srv, "GET", "/v1/sync/pending", "", nil)
+	items, _ := out["items"].([]any)
+	if code != 200 || len(items) != 1 {
+		t.Fatalf("only the non-quiet resolved email must be pending: %d %v", code, out)
+	}
+	it := items[0].(map[string]any)
+	if it["email_id"] != "gmail-A1" || it["label"] != "mailcat/Finanzas/Banco" || it["confident"] != true {
+		t.Fatalf("%v", it)
+	}
+	if _, has := it["previous_label"]; has {
+		t.Error("nothing was pushed yet")
+	}
+	if code, _ := call(t, srv, "POST", "/v1/sync/ack", "", map[string]any{"email_id": "gmail-A1", "category": "finance.bank"}); code != 200 {
+		t.Fatalf("ack: %d", code)
+	}
+	if _, out = call(t, srv, "GET", "/v1/sync/pending", "", nil); len(out["items"].([]any)) != 0 {
+		t.Fatal("an acked email must leave the queue")
+	}
+	// the user corrects it => it comes back with the previous label to remove
+	call(t, srv, "POST", "/v1/emails/gmail-A1/feedback", "", map[string]any{"correct": false, "category": "finance.purchase"})
+	_, out = call(t, srv, "GET", "/v1/sync/pending", "", nil)
+	items = out["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("a correction must be re-synced: %v", out)
+	}
+	it = items[0].(map[string]any)
+	if it["label"] != "mailcat/Finanzas/Compras" || it["previous_label"] != "mailcat/Finanzas/Banco" {
+		t.Fatalf("%v", it)
+	}
+	if code, _ := call(t, srv, "POST", "/v1/sync/ack", "", map[string]any{"email_id": "nope", "category": "x"}); code != 404 {
+		t.Errorf("ack unknown: %d", code)
+	}
+	if code, _ := call(t, srv, "POST", "/v1/sync/ack", "", map[string]any{"email_id": "gmail-A1"}); code != 400 {
+		t.Errorf("ack missing category: %d", code)
+	}
+}
+
+// The exact payload the n8n "Preparar para mailcat" node produces must be understood.
+func TestN8nPayloadWithGmailLabels(t *testing.T) {
+	srv := newServer(t, "")
+	code, out := call(t, srv, "POST", "/v1/emails/classify", "", map[string]any{
+		"id": "gmail-18f0abc", "sender": "Shop <deals@shop.example>", "subject": "Hello", "body": "see you",
+		"message_id": "m1@shop.example", "in_reply_to": "", "received_at": "2026-10-05T10:00:00.000Z",
+		"headers": map[string]string{"list-unsubscribe": "<mailto:x@y>", "x-gmail-labels": "inbox,category promotions,unread"},
+	})
+	if code != 201 {
+		t.Fatalf("%d %v", code, out)
+	}
+	reasons := strings.Join(toStrings(out["explanation"]), "|")
+	if !strings.Contains(reasons, "Gmail lo marcó como Promociones") {
+		t.Errorf("Gmail's own category label should be used as evidence: %v", out["explanation"])
+	}
+	// the category tree exposes the labels n8n must create
+	_, cats := call(t, srv, "GET", "/v1/categories", "", nil)
+	found := false
+	for _, l := range cats["labels"].([]any) {
+		if l.(map[string]any)["label"] == "mailcat/Finanzas/Banco" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("labels missing: %v", cats["labels"])
+	}
+}
+
+func toStrings(v any) []string {
+	var out []string
+	if l, ok := v.([]any); ok {
+		for _, x := range l {
+			out = append(out, fmt.Sprint(x))
+		}
+	}
+	return out
 }

@@ -134,6 +134,19 @@ func (t *Tree) Path(id string) string {
 	return strings.Join(parts, " / ")
 }
 
+// PathNames returns the names from the root to id.
+func (t *Tree) PathNames(id string) []string {
+	c, ok := t.byID[id]
+	if !ok {
+		return []string{id}
+	}
+	out := []string{c.Name}
+	for _, a := range t.Ancestors(id) {
+		out = append([]string{t.byID[a].Name}, out...)
+	}
+	return out
+}
+
 // All returns every category sorted by id.
 func (t *Tree) All() []Category {
 	out := make([]Category, 0, len(t.byID))

@@ -10,14 +10,14 @@ import (
 	"github.com/jaimesoad/mail-categorizer/internal/learning"
 )
 
-const ruleCols = `id,category_id,key,kind,negative,conditions,weight,observations,confirmations,rejections,created_at,updated_at`
+const ruleCols = `id,category_id,key,kind,negative,conditions,weight,observations,confirmations,rejections,teacher_confirmations,created_at,updated_at`
 
 func scanRule(sc interface{ Scan(...any) error }) (learning.Rule, error) {
 	var r learning.Rule
 	var neg int
 	var conds string
 	var c, u sql.NullString
-	if err := sc.Scan(&r.ID, &r.CategoryID, &r.Key, &r.Kind, &neg, &conds, &r.Weight, &r.Observations, &r.Confirmations, &r.Rejections, &c, &u); err != nil {
+	if err := sc.Scan(&r.ID, &r.CategoryID, &r.Key, &r.Kind, &neg, &conds, &r.Weight, &r.Observations, &r.Confirmations, &r.Rejections, &r.TeacherConfirmations, &c, &u); err != nil {
 		return r, err
 	}
 	r.Negative = neg == 1
@@ -76,10 +76,10 @@ func (d *DB) SaveRule(ctx context.Context, r learning.Rule) error {
 	if err != nil {
 		return err
 	}
-	_, err = d.ExecContext(ctx, `INSERT INTO learned_rules(`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err = d.ExecContext(ctx, `INSERT INTO learned_rules(`+ruleCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(category_id,key,negative) DO UPDATE SET weight=excluded.weight, observations=excluded.observations,
-  confirmations=excluded.confirmations, rejections=excluded.rejections, updated_at=excluded.updated_at, kind=excluded.kind`,
-		r.ID, r.CategoryID, r.Key, r.Kind, b2i(r.Negative), string(conds), r.Weight, r.Observations, r.Confirmations, r.Rejections, ts(r.CreatedAt), ts(r.UpdatedAt))
+  confirmations=excluded.confirmations, rejections=excluded.rejections, teacher_confirmations=excluded.teacher_confirmations, updated_at=excluded.updated_at, kind=excluded.kind`,
+		r.ID, r.CategoryID, r.Key, r.Kind, b2i(r.Negative), string(conds), r.Weight, r.Observations, r.Confirmations, r.Rejections, r.TeacherConfirmations, ts(r.CreatedAt), ts(r.UpdatedAt))
 	d.bump()
 	return err
 }

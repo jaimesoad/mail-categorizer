@@ -16,6 +16,7 @@ const (
 	Ask     = "ask"     // "I need to ask"
 	Unknown = "unknown" // "I don't know"
 	User    = "user"    // the user decided
+	Teacher = "teacher" // the local LLM decided; awaiting human verification
 )
 
 // QA is a question the user answered during the session.
@@ -79,11 +80,17 @@ func Build(in Input) Explanation {
 		x.Method = string(classifier.MethodUser)
 		x.Score = 1
 	}
+	if in.Decision == Teacher {
+		x.Method = string(classifier.MethodModel)
+	}
 	x.Headline = headline(in.Decision, x.Path, x.Score)
 
 	seen := map[string]bool{}
 	if in.Decision == User {
 		x.Reasons = append(x.Reasons, "La categoría fue establecida por el usuario.")
+	}
+	if in.Decision == Teacher {
+		x.Reasons = append(x.Reasons, "La categoría fue propuesta por el LLM local durante el preentrenamiento.")
 	}
 	for _, e := range classifier.Relevant(in.Tree, in.Result.Evidence, cat) {
 		if !seen[e.Reason] && len(x.Reasons) < maxReasons {
@@ -129,6 +136,8 @@ func headline(decision, path string, score float64) string {
 		return "Necesito preguntarte algo para decidir."
 	case User:
 		return fmt.Sprintf("Clasificado por ti como %s.", path)
+	case Teacher:
+		return fmt.Sprintf("El asistente local (LLM) lo clasificó como %s; falta tu verificación.", path)
 	}
 	return "No tengo evidencia suficiente para clasificar este correo."
 }

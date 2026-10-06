@@ -1,0 +1,126 @@
+{
+  "name": "mailcat · 3 Crear etiquetas en Gmail (una vez)",
+  "nodes": [
+    {
+      "id": "0b238bdb-6e87-49bb-ba2f-0af42a9abe1e",
+      "name": "Ejecutar a mano",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "20be305f-6bb0-4629-b8ab-1312510f5eaa",
+      "name": "Categorías de mailcat",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "http://mailcat:8080/v1/categories",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "mailcat token"
+        }
+      }
+    },
+    {
+      "id": "6a0d271c-83f8-4cd5-a61c-a5c9c5179e09",
+      "name": "Una por categoría",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "fieldToSplitOut": "labels",
+        "options": {}
+      }
+    },
+    {
+      "id": "b9d8aa9f-0a45-45eb-ab46-b81d9914b732",
+      "name": "Crear etiqueta en Gmail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "gmailOAuth2",
+        "options": {},
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $json.label, labelListVisibility: \"labelShow\", messageListVisibility: \"show\" }) }}"
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Ejecutar a mano": {
+      "main": [
+        [
+          {
+            "node": "Categorías de mailcat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Categorías de mailcat": {
+      "main": [
+        [
+          {
+            "node": "Una por categoría",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Una por categoría": {
+      "main": [
+        [
+          {
+            "node": "Crear etiqueta en Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "note": "Crea mailcat/<categoría> en Gmail. Si ya existe, Gmail responde 409 y se ignora. Ejecútalo de nuevo si añades categorías."
+  }
+}

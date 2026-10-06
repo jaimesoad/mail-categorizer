@@ -119,3 +119,29 @@ func TestEmptyDatabase(t *testing.T) {
 		t.Fatalf("%+v %v", r, err)
 	}
 }
+
+func TestTeacherAccuracyFromHumanVerification(t *testing.T) {
+	db := setup(t)
+	for _, id := range []string{"a", "b", "c", "d"} {
+		addEmail(t, db, id, "resolved", "ask", "bank", "teacher", 0)
+		db.AddInteraction(ctx, storage.Interaction{EmailID: id, Kind: storage.KindManual, ResultingCategory: "bank", Actor: storage.ActorLLM}, now)
+	}
+	// a person checks a, b (agrees) and c (disagrees); d stays unverified
+	db.AddInteraction(ctx, storage.Interaction{EmailID: "a", Kind: storage.KindConfirm, PreviousPrediction: "bank", ResultingCategory: "bank"}, now)
+	db.AddInteraction(ctx, storage.Interaction{EmailID: "b", Kind: storage.KindConfirm, PreviousPrediction: "bank", ResultingCategory: "bank"}, now)
+	db.AddInteraction(ctx, storage.Interaction{EmailID: "c", Kind: storage.KindCorrect, PreviousPrediction: "bank", ResultingCategory: "shop"}, now)
+	r, err := Compute(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.LLMLabels != 4 || r.AwaitingAudit != 1 || r.TeacherChecked != 3 || !near(r.TeacherAccuracy, 2.0/3) {
+		t.Fatalf("%+v", r)
+	}
+	// LLM interactions must not count as user effort
+	if r.ManualLabels != 0 || r.Corrections != 1 {
+		t.Errorf("effort must only count the person: manual=%d corrections=%d", r.ManualLabels, r.Corrections)
+	}
+	if !strings.Contains(r.Text(), "Fiabilidad del LLM") {
+		t.Error("report should show teacher reliability")
+	}
+}

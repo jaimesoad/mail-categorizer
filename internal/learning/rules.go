@@ -37,18 +37,21 @@ type Cond struct {
 
 // Rule is a learned rule. Negative rules mean "NOT this category" (§21).
 type Rule struct {
-	ID            string    `json:"id"`
-	CategoryID    string    `json:"category_id"`
-	Key           string    `json:"key"` // canonical form of Conditions; used for lookup
-	Kind          string    `json:"kind"`
-	Conditions    []Cond    `json:"conditions"`
-	Negative      bool      `json:"negative"`
-	Weight        float64   `json:"weight"`
-	Observations  int       `json:"observations"`
-	Confirmations int       `json:"confirmations"`
-	Rejections    int       `json:"rejections"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            string  `json:"id"`
+	CategoryID    string  `json:"category_id"`
+	Key           string  `json:"key"` // canonical form of Conditions; used for lookup
+	Kind          string  `json:"kind"`
+	Conditions    []Cond  `json:"conditions"`
+	Negative      bool    `json:"negative"`
+	Weight        float64 `json:"weight"`
+	Observations  int     `json:"observations"`
+	Confirmations int     `json:"confirmations"` // confirmed by a person
+	Rejections    int     `json:"rejections"`
+	// TeacherConfirmations counts confirmations that came only from the local
+	// LLM "teacher": they count for half and cannot make a rule strong alone.
+	TeacherConfirmations int       `json:"teacher_confirmations,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // Repo is the persistence the learner and the learned signal need.
@@ -61,16 +64,37 @@ type Repo interface {
 	SaveRule(ctx context.Context, r Rule) error
 }
 
+// teacherWeight is how much one LLM-teacher confirmation counts relative to a
+// human one; teacherCap bounds rules that no person has ever confirmed.
+const (
+	teacherWeight = 0.5
+	teacherCap    = 0.70
+)
+
+// EffectiveConfirmations blends human and teacher confirmations.
+func (r Rule) EffectiveConfirmations() float64 {
+	return float64(r.Confirmations) + teacherWeight*float64(r.TeacherConfirmations)
+}
+
 // Weight maps counts to a rule weight (§18): confirmations grow it with
 // diminishing returns (1→0.20, 3→0.45, 10→0.80 for cap 0.9) and the share of
 // rejections attenuates it without ever zeroing a well-confirmed rule.
-func Weight(cap float64, confirmations, rejections int) float64 {
+func Weight(cap float64, confirmations float64, rejections int) float64 {
 	if confirmations <= 0 {
 		return 0
 	}
-	growth := cap * (1 - math.Exp(-0.25*float64(confirmations)))
-	precision := float64(confirmations+1) / float64(confirmations+rejections+1)
+	growth := cap * (1 - math.Exp(-0.25*confirmations))
+	precision := (confirmations + 1) / (confirmations + float64(rejections) + 1)
 	return round4(growth * precision)
+}
+
+// RuleWeight is Weight applied to a rule, honouring the teacher cap.
+func RuleWeight(r Rule) float64 {
+	cap := weightCap[r.Kind]
+	if r.Confirmations == 0 && cap > teacherCap {
+		cap = teacherCap
+	}
+	return Weight(cap, r.EffectiveConfirmations(), r.Rejections)
 }
 
 func round4(f float64) float64 { return math.Round(f*10000) / 10000 }

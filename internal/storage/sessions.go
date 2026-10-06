@@ -18,6 +18,8 @@ type SessionRow struct {
 	FinalCategory   string
 	ResolvedBy      string
 	State           []byte
+	Quiet           bool   // bulk import: never prompt the user about it
+	SyncedCategory  string // category last pushed to the external mailbox (Gmail label)
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -27,11 +29,11 @@ func (d *DB) SaveSession(ctx context.Context, s SessionRow, now time.Time) error
 	if s.ID == "" {
 		s.ID = NewID()
 	}
-	_, err := d.ExecContext(ctx, `INSERT INTO sessions(id,email_id,status,initial_decision,questions_asked,final_category,resolved_by,state,created_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?)
+	_, err := d.ExecContext(ctx, `INSERT INTO sessions(id,email_id,status,initial_decision,questions_asked,final_category,resolved_by,state,quiet,created_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(email_id) DO UPDATE SET status=excluded.status, questions_asked=excluded.questions_asked,
   final_category=excluded.final_category, resolved_by=excluded.resolved_by, state=excluded.state, updated_at=excluded.updated_at`,
-		s.ID, s.EmailID, s.Status, s.InitialDecision, s.QuestionsAsked, nullStr(s.FinalCategory), nullStr(s.ResolvedBy), string(s.State), ts(now), ts(now))
+		s.ID, s.EmailID, s.Status, s.InitialDecision, s.QuestionsAsked, nullStr(s.FinalCategory), nullStr(s.ResolvedBy), string(s.State), b2i(s.Quiet), ts(now), ts(now))
 	d.bump()
 	d.bumpLabels()
 	return err
@@ -40,14 +42,16 @@ ON CONFLICT(email_id) DO UPDATE SET status=excluded.status, questions_asked=excl
 // GetSession loads the session of an email.
 func (d *DB) GetSession(ctx context.Context, emailID string) (SessionRow, error) {
 	var s SessionRow
-	var fc, rb, c, u sql.NullString
+	var fc, rb, sc, c, u sql.NullString
 	var state string
-	err := d.QueryRowContext(ctx, `SELECT id,email_id,status,initial_decision,questions_asked,final_category,resolved_by,state,created_at,updated_at FROM sessions WHERE email_id=?`, emailID).
-		Scan(&s.ID, &s.EmailID, &s.Status, &s.InitialDecision, &s.QuestionsAsked, &fc, &rb, &state, &c, &u)
+	var quiet int
+	err := d.QueryRowContext(ctx, `SELECT id,email_id,status,initial_decision,questions_asked,final_category,resolved_by,state,quiet,synced_category,created_at,updated_at FROM sessions WHERE email_id=?`, emailID).
+		Scan(&s.ID, &s.EmailID, &s.Status, &s.InitialDecision, &s.QuestionsAsked, &fc, &rb, &state, &quiet, &sc, &c, &u)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, ErrNotFound
 	}
 	s.FinalCategory, s.ResolvedBy, s.State = fc.String, rb.String, []byte(state)
+	s.Quiet, s.SyncedCategory = quiet == 1, sc.String
 	s.CreatedAt, s.UpdatedAt = parseTS(c), parseTS(u)
 	return s, err
 }
@@ -73,18 +77,28 @@ type Interaction struct {
 	ResultingCategory  string
 	ExpectedGain       float64
 	RealizedGain       float64
+	Actor              string // ActorUser (default) or ActorLLM
 	CreatedAt          time.Time
 }
+
+// Actors that can produce interactions.
+const (
+	ActorUser = "user"
+	ActorLLM  = "llm"
+)
 
 // AddInteraction records an interaction.
 func (d *DB) AddInteraction(ctx context.Context, in Interaction, now time.Time) error {
 	if in.ID == "" {
 		in.ID = NewID()
 	}
-	_, err := d.ExecContext(ctx, `INSERT INTO interactions(id,email_id,session_id,kind,question_id,answer,previous_prediction,resulting_category,expected_gain,realized_gain,created_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+	if in.Actor == "" {
+		in.Actor = ActorUser
+	}
+	_, err := d.ExecContext(ctx, `INSERT INTO interactions(id,email_id,session_id,kind,question_id,answer,previous_prediction,resulting_category,expected_gain,realized_gain,actor,created_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID, in.EmailID, nullStr(in.SessionID), in.Kind, nullStr(in.QuestionID), nullableAnswer(in), nullStr(in.PreviousPrediction),
-		nullStr(in.ResultingCategory), in.ExpectedGain, in.RealizedGain, ts(now))
+		nullStr(in.ResultingCategory), in.ExpectedGain, in.RealizedGain, in.Actor, ts(now))
 	d.bump()
 	if in.Kind == KindConfirm || in.Kind == KindCorrect || in.Kind == KindManual {
 		d.bumpLabels()
@@ -101,7 +115,7 @@ func nullableAnswer(in Interaction) sql.NullString {
 
 // Interactions lists an email's interactions in chronological order.
 func (d *DB) Interactions(ctx context.Context, emailID string) ([]Interaction, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id,COALESCE(session_id,''),kind,COALESCE(question_id,''),COALESCE(answer,''),COALESCE(previous_prediction,''),COALESCE(resulting_category,''),COALESCE(expected_gain,0),COALESCE(realized_gain,0),created_at
+	rows, err := d.QueryContext(ctx, `SELECT id,COALESCE(session_id,''),kind,COALESCE(question_id,''),COALESCE(answer,''),COALESCE(previous_prediction,''),COALESCE(resulting_category,''),COALESCE(expected_gain,0),COALESCE(realized_gain,0),actor,created_at
 FROM interactions WHERE email_id=? ORDER BY created_at, rowid`, emailID)
 	if err != nil {
 		return nil, err
@@ -111,7 +125,7 @@ FROM interactions WHERE email_id=? ORDER BY created_at, rowid`, emailID)
 	for rows.Next() {
 		in := Interaction{EmailID: emailID}
 		var c sql.NullString
-		if err := rows.Scan(&in.ID, &in.SessionID, &in.Kind, &in.QuestionID, &in.Answer, &in.PreviousPrediction, &in.ResultingCategory, &in.ExpectedGain, &in.RealizedGain, &c); err != nil {
+		if err := rows.Scan(&in.ID, &in.SessionID, &in.Kind, &in.QuestionID, &in.Answer, &in.PreviousPrediction, &in.ResultingCategory, &in.ExpectedGain, &in.RealizedGain, &in.Actor, &c); err != nil {
 			return nil, err
 		}
 		in.CreatedAt = parseTS(c)
@@ -119,3 +133,6 @@ FROM interactions WHERE email_id=? ORDER BY created_at, rowid`, emailID)
 	}
 	return out, rows.Err()
 }
+
+// Session resolution sources (mirrors engine.Resolved*, needed by SQL consumers).
+const ResolvedPredicted = "predicted"
