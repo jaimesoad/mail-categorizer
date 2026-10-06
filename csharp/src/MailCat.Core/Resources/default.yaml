@@ -1,0 +1,276 @@
+# Adaptive Email Categorizer (mailcat, versión C#) — configuración de ejemplo
+# Todo lo de aquí es editable sin recompilar. Las claves desconocidas se rechazan.
+
+database: mailcat.db
+
+# §15 — umbrales de decisión
+thresholds:
+  auto: 0.85        # >= auto y con margen suficiente: clasifica sin preguntar
+  ask: 0.60         # >= ask: "buena predicción" (se pregunta solo si una pregunta aporta información)
+  min_margin: 0.20  # ventaja mínima sobre el segundo candidato para auto-clasificar
+
+max_questions_per_email: 5   # §31
+
+similarity:                  # §22 — TF-IDF k-NN (necesita guardar el cuerpo)
+  enabled: true
+  k: 10
+  min_similarity: 0.25
+  max_weight: 0.75           # la similitud nunca decide sola
+
+learning:
+  enabled: true
+
+confirmation:                # §16 — muestreo determinista de confirmaciones
+  base_rate: 0.10
+
+question_selection:
+  min_gain: 0.05             # bits mínimos para que valga la pena preguntar
+
+privacy:                     # §24
+  store_body: true
+  max_body_chars: 20000
+
+# §28 — categorías jerárquicas ("parent" referencia otro id)
+categories:
+  - {id: work, name: Trabajo}
+  - {id: work.meetings, parent: work, name: Reuniones}
+  - {id: personal, name: Personal}
+  - {id: finance, name: Finanzas}
+  - {id: finance.bank, parent: finance, name: Banco}
+  - {id: finance.card, parent: finance, name: Tarjeta de crédito}
+  - {id: finance.purchase, parent: finance, name: Compras}
+  - {id: finance.taxes, parent: finance, name: Impuestos}
+  - {id: newsletters, name: Boletines}
+  - {id: promotions, name: Promociones}
+  - {id: social, name: Redes sociales}
+  - {id: shipping, name: Envíos}
+  - {id: security, name: Seguridad y cuentas}
+
+# §29 — preguntas. "affinity" = P(sí | categoría); sin datos históricos permite
+# elegir preguntas con Information Gain (arranque en frío). Las categorías sin
+# entrada heredan la de su ancestro.
+questions:
+  - id: is_purchase
+    text: "¿Este correo corresponde a una compra realizada por ti?"
+    feature: context.is_purchase
+    type: boolean
+    affinity:
+      finance.purchase: 0.95
+      finance.bank: 0.10
+      finance.card: 0.15
+      shipping: 0.60
+      promotions: 0.25
+      work: 0.05
+      personal: 0.05
+      security: 0.03
+      newsletters: 0.03
+      social: 0.02
+
+  - id: is_bank
+    text: "¿Está relacionado con una cuenta bancaria o una tarjeta?"
+    feature: context.is_bank_related
+    type: boolean
+    affinity:
+      finance.bank: 0.95
+      finance.card: 0.90
+      finance.purchase: 0.20
+      finance.taxes: 0.30
+      security: 0.25
+      work: 0.05
+      personal: 0.05
+      promotions: 0.05
+      newsletters: 0.03
+      social: 0.01
+      shipping: 0.02
+
+  - id: is_work
+    text: "¿Es un correo de trabajo?"
+    feature: context.is_work
+    type: boolean
+    affinity:
+      work: 0.95
+      finance: 0.08
+      personal: 0.03
+      newsletters: 0.10
+      promotions: 0.02
+      social: 0.05
+      shipping: 0.02
+      security: 0.10
+
+  - id: is_promotion
+    text: "¿Es publicidad o una promoción?"
+    feature: context.is_promotion
+    type: boolean
+    affinity:
+      promotions: 0.95
+      newsletters: 0.50
+      shipping: 0.08
+      finance: 0.05
+      work: 0.03
+      personal: 0.02
+      social: 0.15
+
+  - id: subscribed
+    text: "¿Te suscribiste a este boletín?"
+    feature: context.is_subscribed
+    type: boolean
+    affinity:
+      newsletters: 0.90
+      promotions: 0.55
+      social: 0.30
+      finance: 0.05
+      work: 0.10
+      personal: 0.02
+
+  - id: from_person
+    text: "¿Lo escribió una persona (no un sistema automático)?"
+    feature: context.is_human
+    type: boolean
+    affinity:
+      personal: 0.90
+      work: 0.60
+      finance: 0.03
+      promotions: 0.01
+      newsletters: 0.01
+      social: 0.02
+      shipping: 0.01
+      security: 0.01
+
+  - id: about_shipping
+    text: "¿Trata sobre un envío o un paquete?"
+    feature: context.is_shipping_related
+    type: boolean
+    affinity:
+      shipping: 0.95
+      finance.purchase: 0.40
+      promotions: 0.05
+      work: 0.03
+      personal: 0.03
+
+  - id: expected
+    text: "¿Esperabas este correo?"
+    feature: context.expected
+    type: boolean
+    reliability: 0.85          # respuesta más subjetiva
+    affinity:
+      personal: 0.75
+      work: 0.75
+      finance: 0.70
+      security: 0.40
+      promotions: 0.10
+      newsletters: 0.35
+      social: 0.30
+
+# §8 — reglas deterministas (se combinan con noisy-OR; peso negativo = descartar)
+rules:
+  - id: security-alert
+    category: security
+    weight: 0.80
+    reason: "Parece una alerta de seguridad."
+    when: {feature: content.intent, op: equals, value: security_alert}
+
+  - id: password-reset
+    category: security
+    weight: 0.85
+    reason: "Trata de restablecer una contraseña."
+    when: {feature: content.intent, op: equals, value: password_reset}
+
+  - id: social-notification
+    category: social
+    weight: 0.80
+    reason: "Es una notificación de una red social."
+    when: {feature: content.intent, op: equals, value: social_notification}
+
+  - id: newsletter-unsub
+    category: newsletters
+    weight: 0.70
+    reason: "Se presenta como boletín y permite darse de baja."
+    when:
+      all:
+        - {feature: content.intent, op: equals, value: newsletter}
+        - {feature: headers.has_unsubscribe, op: equals, value: "true"}
+
+  - id: newsletter-text
+    category: newsletters
+    weight: 0.50
+    reason: "El texto parece un boletín."
+    when: {feature: content.intent, op: equals, value: newsletter}
+
+  - id: promotion
+    category: promotions
+    weight: 0.65
+    reason: "Contiene lenguaje promocional."
+    when: {feature: content.intent, op: equals, value: promotion}
+
+  - id: promotion-bulk
+    category: promotions
+    weight: 0.20
+    reason: "Es un envío masivo con opción de baja."
+    when:
+      all:
+        - {feature: content.intent, op: equals, value: promotion}
+        - {feature: headers.is_bulk, op: equals, value: "true"}
+
+  - id: meeting
+    category: work.meetings
+    weight: 0.65
+    reason: "Trata de una reunión o invitación de calendario."
+    when: {feature: content.intent, op: equals, value: meeting}
+
+  - id: shipping
+    category: shipping
+    weight: 0.65
+    reason: "Informa sobre un envío."
+    when: {feature: content.intent, op: equals, value: shipping}
+
+  - id: receipt
+    category: finance.purchase
+    weight: 0.60
+    reason: "Es un recibo o confirmación de pedido."
+    when: {feature: content.intent, op: equals, value: receipt}
+
+  - id: order-number
+    category: finance.purchase
+    weight: 0.20
+    reason: "Menciona un número de pedido."
+    when: {feature: content.has_order_number, op: equals, value: "true"}
+
+  - id: transaction
+    category: finance
+    weight: 0.60
+    reason: "Describe una transacción."
+    when: {feature: content.intent, op: equals, value: transaction}
+
+  - id: amount
+    category: finance
+    weight: 0.10
+    reason: "Contiene un monto monetario."
+    when: {feature: content.contains_amount, op: equals, value: "true"}
+
+  - id: statement
+    category: finance
+    weight: 0.60
+    reason: "Parece un estado de cuenta."
+    when: {feature: content.intent, op: equals, value: statement}
+
+  - id: invoice
+    category: finance
+    weight: 0.55
+    reason: "Menciona una factura."
+    when: {feature: content.intent, op: equals, value: invoice}
+
+  - id: personal-person
+    category: personal
+    weight: 0.45
+    reason: "Parece un mensaje escrito por una persona desde un buzón personal."
+    when:
+      all:
+        - {feature: content.intent, op: equals, value: personal_message}
+        - {feature: sender.is_freemail, op: equals, value: "true"}
+
+  # Ejemplo de regla específica del usuario (descomenta y adapta):
+  # - id: my-bank
+  #   category: finance.bank
+  #   weight: 0.75
+  #   reason: "El remitente coincide con un dominio bancario conocido."
+  #   when: {feature: sender.domain, op: in, value: [mybank.example]}
